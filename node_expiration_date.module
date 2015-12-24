@@ -1,0 +1,178 @@
+<?php
+/**
+* @file
+* Módulo Node Expiration Date 
+* Este módulo permite añadir una fecha de caducidad a los nodos.
+*/
+
+/**
+ * Implements hook_help().
+ */
+function node_expiration_date_help($path, $arg) {
+  switch ($path) {
+    // Ayuda para el módulo Node Espiration Date
+    case 'admin/help#node_expiration_date':
+      return '<p>' . t('This module permits to add an expiration 
+date to any content in the site. The administrator can configure 
+which content types could have an expiration date.') . '</p>';
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function node_expiration_date_menu() {
+  $items['admin/config/workflow/node_expiration_date'] = array(
+    'title' => 'Node Expiration Date settings',
+    'description' => 'Settings for module Node Expiration Date',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_expiration_date_admin_settings'),
+    'access callback' => 'user_access',
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'node_expiration_date.admin.inc',
+  );
+return $items;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function node_expiration_date_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'page_node_form') {
+    //dpm($form_state['node']->expiration_date);
+    $form['options']['node_expiration_date'] = array(
+      '#type' => 'fieldset',
+      '#group' => 'additional_settings',
+      '#title' => t('Node Expiration Date'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+    );
+    $form['options']['node_expiration_date']['active'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Active'),
+      '#description' => t('Active the expiration date'),
+      '#default_value' => 0,
+    );
+    // Buscamos la fecha caducidad en el nodo
+    if (isset($form_state['node']->expiration_date)) {
+      $day = $form_state['node']->expiration_date['day'];
+      $month = $form_state['node']->expiration_date['month'];
+      $year = $form_state['node']->expiration_date['year'];
+    }
+    else {
+      //si no hay fecha ponemos la fecha por defecto guardada en la variable_get
+      $date = variable_get('default_expiration_date');
+      $day = $date['day'];
+      $month = $date['month'];
+      $year = $date['year'];
+    }
+    
+    
+    $form['options']['node_expiration_date']['expiration_date'] = array(
+      '#type' => 'date',
+      '#title' => t('Expiration date'),
+      '#description' => t('Select the expiration date'),
+      '#default_value' => array('day' => $day, 'month' => $month, 'year' => $year),
+    );
+  }
+}
+
+/**
+ * Implements hook_node_validate().
+ */
+function node_expiration_date_node_validate($node, $form, &$form_state) {
+  //dpm($form_state['values']);
+  $year = $form_state['values']['expiration_date']['year'];
+  $month = $form_state['values']['expiration_date']['month'];
+  $day = $form_state['values']['expiration_date']['day'];
+  if (!checkdate($month, $day, $year)) {
+    form_set_error('page_node_form',t('Incorrect date, try again.'));
+  }
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function node_expiration_date_node_insert($node) {
+  //dpm($node);
+  $day = intval($node->expiration_date['day']);
+  $month = intval($node->expiration_date['month']);
+  $year = intval($node->expiration_date['year']);
+  $date = mktime(0, 0, 0, $month, $day, $year);
+  db_insert('node_expiration_date')
+    ->fields(array(
+      'nid' => $node->nid,
+      'expiration_date' => $date,
+    ))
+    ->execute();
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function node_expiration_date_node_update($node) {
+  $day = intval($node->expiration_date['day']);
+  $month = intval($node->expiration_date['month']);
+  $year = intval($node->expiration_date['year']);
+  $date = mktime(0, 0, 0, $month, $day, $year);
+  db_update('node_expiration_date')
+    ->fields(array('expiration_date' => $date))
+    ->condition('nid', $node->nid)
+    ->execute();
+}
+
+/**
+ * Implements hook_node_delete().
+ */
+function node_expiration_date_node_delete($node) {
+  db_delete('node_expiration_date')
+    ->condition('nid', $node->nid)
+    ->execute();
+}
+
+/**
+ * Implements hook_node_load().
+ */
+function node_expiration_date_node_load($nodes, $types) {
+  //dpm($nodes, "NODES LOAD");
+  //dpm(key($nodes), "NID");
+  $result = db_query('SELECT * FROM {node_expiration_date} WHERE nid IN(:nids)', array(':nids' => array_keys($nodes)));
+  foreach ($result as $record) {
+    $timestamp = $record->expiration_date;
+    $day = date('j', $timestamp);
+    $month = date('n', $timestamp);
+    $year = date('Y', $timestamp);
+    $nodes[$record->nid]->expiration_date = array();
+    $nodes[$record->nid]->expiration_date['day'] = $day;
+    $nodes[$record->nid]->expiration_date['month'] = $month;
+    $nodes[$record->nid]->expiration_date['year'] = $year;
+  }
+  //dpm($node);
+}
+
+/**
+ * Implements hook_cron().
+ */
+function node_expiration_date_cron() {
+  //buscamos en la tabla node_expiration_date los nodos con fecha caducidad inferior a hoy
+  $now = time();
+  $result = db_query('SELECT * FROM {node_expiration_date} WHERE expiration_date < ' . $now);
+  foreach ($result as $record) {
+    //los nodos encontrados se modifican a no publicados
+    db_update('node')
+      ->fields(array('status' => 0))
+      ->condition('nid', $record->nid)
+      ->execute();
+    //Guardar en el registro del sistema los nodos despublicados
+    $result_node = db_query('SELECT * FROM {node} WHERE nid = ' . $record->nid);
+    foreach ($result_node as $record_node) {
+      $title = $record_node->title;
+      watchdog('node_expiration_date', 
+              'Node unpublished. NID: %nid - TITLE: %title', 
+              array('%nid' => $record->nid, '%title' => $title), 
+              WATCHDOG_NOTICE, 
+              l(t('view'), 'node/' . $record->nid));
+    }
+  }
+}
